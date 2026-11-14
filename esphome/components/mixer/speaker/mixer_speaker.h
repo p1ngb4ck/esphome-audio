@@ -49,6 +49,8 @@ class SourceSpeaker final : public speaker::Speaker, public Component {
   void dump_config() override;
   void setup() override;
   void loop() override;
+  void on_shutdown() override { this->stop_for_teardown_(); }
+  bool teardown() override { return this->teardown_with_loop_(this); }
 
   size_t play(const uint8_t *data, size_t length, TickType_t ticks_to_wait) override;
   size_t play(const uint8_t *data, size_t length) override { return this->play(data, length, 0); }
@@ -129,6 +131,11 @@ class MixerSpeaker final : public Component {
   void dump_config() override;
   void setup() override;
   void loop() override;
+  bool teardown() override {
+    if (this->task_.is_created())
+      this->loop();
+    return !this->task_.is_created();
+  }
 
   void set_source_speaker_storage(std::span<SourceSpeaker *> storage) { this->source_speakers_.init(storage); }
   void add_source_speaker(SourceSpeaker *source_speaker) { this->source_speakers_.push_back(source_speaker); }
