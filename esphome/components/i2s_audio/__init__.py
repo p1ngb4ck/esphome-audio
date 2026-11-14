@@ -28,7 +28,6 @@ from esphome.const import (
     CONF_ID,
     CONF_SAMPLE_RATE,
     CONF_SPEAKER,
-    CONF_TYPE,
 )
 from esphome.core import CORE, ID
 from esphome.cpp_generator import MockObj, MockObjClass
@@ -54,26 +53,6 @@ CONF_I2S_AUDIO_ID = "i2s_audio_id"
 CONF_FULL_DUPLEX = "full_duplex"
 CONF_I2S_COMM_FMT = "i2s_comm_fmt"
 CONF_SPDIF_MODE = "spdif_mode"
-CONF_NVS = "nvs"
-CONF_NVS_NAMESPACE = "namespace"
-CONF_NVS_ENABLE = "enable"
-CONF_NVS_ENABLE_DEFAULT = "enable_default"
-CONF_NVS_LRCLK = "lrclk"
-CONF_NVS_BCLK = "bclk"
-CONF_NVS_MCLK = "mclk"
-CONF_NVS_DOUT = "dout"
-CONF_NVS_DIN = "din"
-CONF_NVS_ENABLE_PIN = "enable_pin"
-NVS_KEYS = (
-    CONF_NVS_ENABLE,
-    CONF_TYPE,
-    CONF_NVS_LRCLK,
-    CONF_NVS_BCLK,
-    CONF_NVS_MCLK,
-    CONF_NVS_DOUT,
-    CONF_NVS_DIN,
-    CONF_NVS_ENABLE_PIN,
-)
 
 CONF_I2S_MODE = "i2s_mode"
 CONF_PRIMARY = "primary"
@@ -179,8 +158,6 @@ I2S_MCLK_MULTIPLE = {
 
 _validate_bits = cv.float_with_unit("bits", "bit")
 
-NVS_NAME = cv.All(cv.string_strict, cv.Length(min=1, max=15))
-
 
 def validate_mclk_divisible_by_3(config: ConfigType) -> ConfigType:
     if config[CONF_BITS_PER_SAMPLE] == 24 and config[CONF_MCLK_MULTIPLE] % 3 != 0:
@@ -239,7 +216,7 @@ async def register_i2s_audio_component(var: MockObj, config: ConfigType) -> None
     if str(config[CONF_I2S_AUDIO_ID]) in _get_data().full_duplex_buses:
         if config[CONF_ID].type.inherits_from(I2SAudioIn):
             cg.add(parent.set_audio_in(var))
-        elif not config.get(CONF_SPDIF_MODE, False):
+        else:
             cg.add(parent.set_audio_out(var))
 
 
@@ -250,13 +227,6 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_I2S_BCLK_PIN): pins.internal_gpio_output_pin_number,
         cv.Optional(CONF_I2S_MCLK_PIN): pins.internal_gpio_output_pin_number,
         cv.Optional(CONF_FULL_DUPLEX, default=False): cv.boolean,
-        cv.Optional(CONF_NVS): cv.Schema(
-            {
-                cv.Required(CONF_NVS_NAMESPACE): NVS_NAME,
-                cv.Optional(CONF_NVS_ENABLE_DEFAULT, default=True): cv.boolean,
-                **{cv.Optional(key): NVS_NAME for key in NVS_KEYS},
-            }
-        ),
     },
 )
 
@@ -267,7 +237,6 @@ class I2SAudioData:
 
     port_map: dict[str, int] = field(default_factory=dict)
     full_duplex_buses: set[str] = field(default_factory=set)
-    nvs_buses: set[str] = field(default_factory=set)
 
 
 def _get_data() -> I2SAudioData:
@@ -321,8 +290,6 @@ def _validate_full_duplex(bus_id: ID) -> None:
         domain=MICROPHONE_DOMAIN, platform=DOMAIN, match=on_bus
     )
     speakers = fv.platform_entries(domain=CONF_SPEAKER, platform=DOMAIN, match=on_bus)
-    if str(bus_id) in _get_data().nvs_buses:
-        speakers = [s for s in speakers if not s.get(CONF_SPDIF_MODE, False)]
     if len(microphones) != 1 or not speakers:
         raise cv.Invalid(
             f"'{CONF_FULL_DUPLEX}' requires exactly one i2s_audio microphone and at least one "
@@ -363,16 +330,13 @@ def _final_validate(_: ConfigType) -> None:
     variant = get_esp32_variant()
     if variant not in I2S_PORTS:
         raise cv.Invalid(f"Unsupported variant {variant}")
-    data = _get_data()
-    data.nvs_buses = {str(c[CONF_ID]) for c in i2s_audio_configs if CONF_NVS in c}
-    fixed = [c for c in i2s_audio_configs if CONF_NVS not in c]
-    if len(fixed) > I2S_PORTS[variant]:
+    if len(i2s_audio_configs) > I2S_PORTS[variant]:
         raise cv.Invalid(
             f"Only {I2S_PORTS[variant]} I2S audio ports are supported on {variant}"
         )
-    if not data.nvs_buses:
-        _assign_ports()
+    _assign_ports()
 
+    data = _get_data()
     for config in i2s_audio_configs:
         if config[CONF_FULL_DUPLEX]:
             bus_id = config[CONF_ID]
@@ -389,13 +353,9 @@ async def to_code(config: ConfigType) -> None:
 
     # Assign I2S port from _final_validate computed mapping
     data = _get_data()
-    if data.nvs_buses:
-        cg.add_define("USE_I2S_AUDIO_NVS")
-        cg.add_define("I2S_AUDIO_NVS_PORTS", I2S_PORTS[get_esp32_variant()])
-    elif (port := data.port_map.get(str(config[CONF_ID]))) is None:
+    if (port := data.port_map.get(str(config[CONF_ID]))) is None:
         raise ValueError(f"No I2S port assigned for {config[CONF_ID]}")
-    else:
-        cg.add(var.set_port(port))
+    cg.add(var.set_port(port))
 
     # Re-enable ESP-IDF's I2S driver (excluded by default to save compile time)
     include_builtin_idf_component("esp_driver_i2s")
@@ -408,16 +368,8 @@ async def to_code(config: ConfigType) -> None:
     cg.add_optional(var.set_mclk_pin, config.get(CONF_I2S_MCLK_PIN))
     if config[CONF_FULL_DUPLEX]:
         cg.add_define("USE_I2S_AUDIO_FULL_DUPLEX")
-    if nvs := config.get(CONF_NVS):
-        cg.add(
-            var.set_nvs(
-                nvs[CONF_NVS_NAMESPACE],
-                nvs[CONF_NVS_ENABLE_DEFAULT],
-                *(nvs.get(key, "") for key in NVS_KEYS),
-            )
-        )
 
 
 FILTER_SOURCE_FILES = filter_source_files_from_defines(
-    {"i2s_audio.cpp": ("USE_I2S_AUDIO_FULL_DUPLEX", "USE_I2S_AUDIO_NVS")}
+    {"i2s_audio.cpp": "USE_I2S_AUDIO_FULL_DUPLEX"}
 )

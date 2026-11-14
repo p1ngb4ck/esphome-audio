@@ -15,8 +15,7 @@
 
 namespace esphome::resampler {
 
-// Above the main loop: paced by its input and output, it takes no more than the sound needs.
-static const UBaseType_t RESAMPLER_TASK_PRIORITY = 2;
+static const UBaseType_t RESAMPLER_TASK_PRIORITY = 1;
 
 static const uint32_t TRANSFER_BUFFER_DURATION_MS = 50;
 
@@ -31,7 +30,6 @@ enum ResamplingEventGroupBits : uint32_t {
   COMMAND_START = (1 << 1),      // signals start request
   COMMAND_FINISH = (1 << 2),     // signals finish request (graceful stop)
   TASK_COMMAND_STOP = (1 << 5),  // signals the task to stop
-  TASK_COMMAND_FINISH = (1 << 6),  // signals the task to end once its input is used up
   STATE_STARTING = (1 << 10),
   STATE_RUNNING = (1 << 11),
   STATE_STOPPING = (1 << 12),
@@ -66,48 +64,7 @@ void ResamplerSpeaker::setup() {
     return;
   }
 
-  if (this->outputs_.empty() && this->groups_.empty()) {
-    this->outputs_.push_back({this->output_speaker_, "", 0, this->target_sample_rate_,
-                              this->passthrough_bits_per_sample_ ? static_cast<uint8_t>(0) : this->target_bits_per_sample_,
-                              0, 0});
-  }
-  if (this->preference_key_ != 0 && this->outputs_.size() + this->groups_.size() > 1)
-    this->load_preference_();
-  this->output_speaker_ = nullptr;
-  if (!this->outputs_.empty()) {
-    size_t index = 0;
-    for (size_t i = 0; i < this->outputs_.size(); i++) {
-      if (this->outputs_[i].key == this->wanted_key_)
-        index = i;
-    }
-    this->apply_output_(this->outputs_[index].speaker);
-  }
-  this->pending_speaker_ = this->output_speaker_;
-
-  for (const Output &output : this->outputs_)
-    this->hook_(output.speaker);
-
-  // Start with loop disabled since no task is running and no commands are pending
-  this->disable_loop();
-}
-
-void ResamplerSpeaker::load_preference_() {
-  if (this->preference_loaded_)
-    return;
-  this->preference_loaded_ = true;
-  this->pref_ = global_preferences->make_preference<uint32_t>(this->preference_key_);
-  uint32_t stored = 0;
-  if (this->pref_.load(&stored))
-    this->wanted_key_ = stored;
-}
-
-void ResamplerSpeaker::hook_(speaker::Speaker *speaker) {
-  if (std::find(this->hooked_.begin(), this->hooked_.end(), speaker) != this->hooked_.end())
-    return;
-  this->hooked_.push_back(speaker);
-  speaker->add_audio_output_callback([this, speaker](uint32_t new_frames, int64_t write_timestamp) {
-    if (this->output_speaker_ != speaker)
-      return;
+  this->output_speaker_->add_audio_output_callback([this](uint32_t new_frames, int64_t write_timestamp) {
     if (this->audio_stream_info_.get_sample_rate() != this->target_stream_info_.get_sample_rate()) {
       // Convert the number of frames from the target sample rate to the source sample rate. Track the remainder to
       // avoid losing frames from integer division truncation.
@@ -119,88 +76,9 @@ void ResamplerSpeaker::hook_(speaker::Speaker *speaker) {
       this->audio_output_callback_(new_frames, write_timestamp);
     }
   });
-}
 
-size_t ResamplerSpeaker::index_of_(const speaker::Speaker *speaker) const {
-  for (size_t i = 0; i < this->outputs_.size(); i++) {
-    if (this->outputs_[i].speaker == speaker)
-      return i;
-  }
-  return this->outputs_.size();
-}
-
-void ResamplerSpeaker::add_group_output(size_t group, speaker::Speaker *speaker, const char *name, uint32_t key,
-                                        uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels) {
-  if (group >= this->groups_.size())
-    return;
-  this->insert_output_(speaker, name, key, sample_rate, bits_per_sample, channels, this->groups_[group].order);
-}
-
-void ResamplerSpeaker::add_runtime_output(speaker::Speaker *speaker, const char *name, uint32_t key,
-                                          uint32_t sample_rate, uint8_t bits_per_sample, uint8_t channels,
-                                          int16_t position) {
-  if (this->preference_key_ != 0)
-    this->load_preference_();
-  this->insert_output_(speaker, name, key, sample_rate, bits_per_sample, channels,
-                       position < 0 ? this->next_order_ : static_cast<uint8_t>(position * 2));
-}
-
-void ResamplerSpeaker::insert_output_(speaker::Speaker *speaker, const char *name, uint32_t key, uint32_t sample_rate,
-                                      uint8_t bits_per_sample, uint8_t channels, uint8_t order) {
-  if (this->index_of_(speaker) != this->outputs_.size())
-    return;
-  size_t position = 0;
-  while (position < this->outputs_.size() && this->outputs_[position].order <= order)
-    position++;
-  this->outputs_.insert(this->outputs_.begin() + position,
-                        {speaker, name, key, sample_rate, bits_per_sample, channels, order, true});
-  this->hook_(speaker);
-  ESP_LOGI(TAG, "Output added: %s", name);
-  if (this->output_speaker_ == nullptr) {
-    this->apply_output_(speaker);
-    this->pending_speaker_ = speaker;
-    if (this->volume_set_)
-      speaker->set_volume(this->volume_);
-    if (this->mute_set_)
-      speaker->set_mute_state(this->mute_state_);
-    this->output_callback_.call(this->active_);
-  } else {
-    this->active_ = this->index_of_(this->output_speaker_);
-    if (key == this->wanted_key_ && this->output_speaker_ != speaker)
-      this->switch_to_(speaker);
-  }
-  this->outputs_changed_callback_.call();
-}
-
-void ResamplerSpeaker::remove_output(speaker::Speaker *speaker) {
-  const size_t index = this->index_of_(speaker);
-  if (index == this->outputs_.size())
-    return;
-  ESP_LOGI(TAG, "Output gone: %s", this->outputs_[index].name);
-  this->outputs_.erase(this->outputs_.begin() + index);
-  if (this->output_speaker_ == speaker) {
-    speaker::Speaker *fallback = this->outputs_.empty() ? nullptr : this->outputs_[0].speaker;
-    this->pending_speaker_ = fallback;
-    this->switch_pending_ = true;
-    if (this->state_ == speaker::STATE_RUNNING || this->state_ == speaker::STATE_STARTING) {
-      this->restart_after_switch_ = fallback != nullptr;
-      this->waiting_for_output_ = false;
-      this->enter_stopping_state_();
-    } else if (this->state_ == speaker::STATE_STOPPED) {
-      this->take_pending_output_();
-    }
-    this->enable_loop();
-  } else {
-    if (this->switch_pending_ && this->pending_speaker_ == speaker)
-      this->pending_speaker_ = this->output_speaker_;
-    this->active_ = this->index_of_(this->output_speaker_);
-  }
-  this->outputs_changed_callback_.call();
-}
-
-void ResamplerSpeaker::forget_output(speaker::Speaker *speaker) {
-  this->remove_output(speaker);
-  std::erase(this->hooked_, speaker);
+  // Start with loop disabled since no task is running and no commands are pending
+  this->disable_loop();
 }
 
 void ResamplerSpeaker::loop() {
@@ -215,8 +93,6 @@ void ResamplerSpeaker::loop() {
                                                    ResamplingEventGroupBits::COMMAND_START |
                                                    ResamplingEventGroupBits::COMMAND_FINISH);
       this->waiting_for_output_ = false;
-      this->restart_after_format_ = false;
-      this->format_changed_.store(false);
       this->enter_stopping_state_();
     } else if (this->state_ == speaker::STATE_STOPPED) {
       // Already stopped, just clear the command bits
@@ -228,14 +104,7 @@ void ResamplerSpeaker::loop() {
   } else if (event_group_bits & ResamplingEventGroupBits::COMMAND_FINISH) {
     if (this->state_ == speaker::STATE_RUNNING) {
       xEventGroupClearBits(this->event_group_, ResamplingEventGroupBits::COMMAND_FINISH);
-      // The input ended (the end of a file): over once it is all handed on, not once the output is quiet.
-      if (this->task_.is_created()) {
-        this->finishing_.store(true);
-        xEventGroupSetBits(this->event_group_, ResamplingEventGroupBits::TASK_COMMAND_FINISH);
-      } else {
-        this->output_speaker_->finish();
-        this->state_ = speaker::STATE_STOPPED;
-      }
+      this->output_speaker_->finish();
     } else if (this->state_ == speaker::STATE_STOPPED) {
       // Already stopped, just clear the command bit
       xEventGroupClearBits(this->event_group_, ResamplingEventGroupBits::COMMAND_FINISH);
@@ -294,17 +163,8 @@ void ResamplerSpeaker::loop() {
   switch (this->state_) {
     case speaker::STATE_STARTING: {
       if (!this->waiting_for_output_) {
-        if (this->switch_pending_) {
-          this->take_pending_output_();
-          this->restart_after_switch_ = false;
-        }
-        if (this->output_speaker_ == nullptr) {
-          this->state_ = speaker::STATE_STOPPED;
-          break;
-        }
         esp_err_t err = this->start_();
         if (err == ESP_OK) {
-          this->finishing_.store(false);
           this->callback_remainder_ = 0;  // reset callback remainder
           this->status_clear_error();
           this->waiting_for_output_ = true;
@@ -327,17 +187,7 @@ void ResamplerSpeaker::loop() {
       break;
     }
     case speaker::STATE_RUNNING:
-      if (this->format_changed_.exchange(false)) {
-        this->restart_after_format_ = true;
-        this->waiting_for_output_ = false;
-        this->enter_stopping_state_();
-      } else if (this->resampling_ && !this->task_.is_created()) {
-        // The task ended with its input (after finish()): the output finishes what it got on its own.
-        this->resampling_ = false;
-        this->finishing_.store(false);
-        this->output_speaker_->finish();
-        this->state_ = speaker::STATE_STOPPED;
-      } else if (this->output_speaker_->is_stopped()) {
+      if (this->output_speaker_->is_stopped()) {
         this->enter_stopping_state_();
       }
       break;
@@ -356,19 +206,6 @@ void ResamplerSpeaker::loop() {
       break;
     }
     case speaker::STATE_STOPPED:
-      if (this->restart_after_format_) {
-        this->restart_after_format_ = false;
-        this->state_ = speaker::STATE_STARTING;
-        break;
-      }
-      if (this->switch_pending_) {
-        this->take_pending_output_();
-        if (this->restart_after_switch_) {
-          this->restart_after_switch_ = false;
-          this->state_ = speaker::STATE_STARTING;
-          break;
-        }
-      }
       event_group_bits = xEventGroupGetBits(this->event_group_);
       if (event_group_bits == 0) {
         // No pending events, disable loop to save CPU cycles
@@ -393,18 +230,9 @@ size_t ResamplerSpeaker::play(const uint8_t *data, size_t length, TickType_t tic
   if (this->is_stopped()) {
     this->start();
   }
-  // More after finish() (the next file right away): the task goes on.
-  if (this->finishing_.exchange(false))
-    xEventGroupClearBits(this->event_group_, ResamplingEventGroupBits::TASK_COMMAND_FINISH);
 
   size_t bytes_written = 0;
-  if (this->state_ == speaker::STATE_RUNNING && this->audio_stream_info_ != this->started_info_) {
-    if (!this->format_changed_.exchange(true))
-      this->enable_loop_soon_any_context();
-    vTaskDelay(ticks_to_wait);
-  } else if (this->output_speaker_ == nullptr) {
-    vTaskDelay(ticks_to_wait);
-  } else if ((this->output_speaker_->is_running()) && (!this->requires_resampling_())) {
+  if ((this->output_speaker_->is_running()) && (!this->requires_resampling_())) {
     bytes_written = this->output_speaker_->play(data, length, ticks_to_wait);
   } else {
     std::shared_ptr<ring_buffer::RingBuffer> temp_ring_buffer = this->ring_buffer_.lock();
@@ -433,86 +261,18 @@ void ResamplerSpeaker::send_command_(uint32_t command_bit, bool wake_loop) {
 
 void ResamplerSpeaker::start() { this->send_command_(ResamplingEventGroupBits::COMMAND_START, true); }
 
-void ResamplerSpeaker::select_output(size_t index) {
-  if (index >= this->outputs_.size())
-    return;
-  this->wanted_key_ = this->outputs_[index].key;
-  if (this->preference_key_ != 0 && this->outputs_.size() + this->groups_.size() > 1)
-    this->pref_.save(&this->wanted_key_);
-  this->switch_to_(this->outputs_[index].speaker);
-}
-
-void ResamplerSpeaker::switch_to_(speaker::Speaker *speaker) {
-  this->pending_speaker_ = speaker;
-  if (speaker == this->output_speaker_ && !this->switch_pending_)
-    return;
-  this->switch_pending_ = true;
-  if (this->state_ == speaker::STATE_RUNNING || this->state_ == speaker::STATE_STARTING) {
-    this->restart_after_switch_ = true;
-    this->waiting_for_output_ = false;
-    this->enter_stopping_state_();
-  }
-  this->enable_loop();
-}
-
-void ResamplerSpeaker::take_pending_output_() {
-  this->switch_pending_ = false;
-  const bool pause = this->get_pause_state();
-  this->apply_output_(this->pending_speaker_);
-  if (this->output_speaker_ == nullptr) {
-    ESP_LOGI(TAG, "Output: none");
-    return;
-  }
-  if (this->volume_set_)
-    this->output_speaker_->set_volume(this->volume_);
-  if (this->mute_set_)
-    this->output_speaker_->set_mute_state(this->mute_state_);
-  this->output_speaker_->set_pause_state(pause);
-  ESP_LOGI(TAG, "Output: %s", this->output_name(this->active_));
-  this->output_callback_.call(this->active_);
-}
-
-void ResamplerSpeaker::apply_output_(speaker::Speaker *speaker) {
-  const size_t index = this->index_of_(speaker);
-  if (index == this->outputs_.size()) {
-    this->output_speaker_ = nullptr;
-    return;
-  }
-  const Output &output = this->outputs_[index];
-  this->active_ = index;
-  this->output_speaker_ = output.speaker;
-  this->output_channels_ = output.channels;
-  this->target_sample_rate_ = output.sample_rate;
-  this->passthrough_bits_per_sample_ = output.bits_per_sample == 0;
-  if (output.bits_per_sample != 0)
-    this->target_bits_per_sample_ = output.bits_per_sample;
-}
-
-audio::AudioStreamInfo ResamplerSpeaker::active_format() const {
-  if (this->output_speaker_ == nullptr)
-    return this->audio_stream_info_;
-  const uint8_t bits =
-      this->passthrough_bits_per_sample_ ? this->audio_stream_info_.get_bits_per_sample() : this->target_bits_per_sample_;
-  const uint8_t channels = this->output_channels_ != 0 ? this->output_channels_ : this->audio_stream_info_.get_channels();
-  return audio::AudioStreamInfo(bits, channels, this->target_sample_rate_);
-}
-
 esp_err_t ResamplerSpeaker::start_() {
   // In passthrough mode, the output keeps the input's bits per sample so only the sample rate is resampled.
   const uint8_t target_bits_per_sample = this->passthrough_bits_per_sample_
                                              ? this->audio_stream_info_.get_bits_per_sample()
                                              : this->target_bits_per_sample_;
-  const uint8_t output_channels = this->output_channels_;
-  this->target_stream_info_ = audio::AudioStreamInfo(
-      target_bits_per_sample, output_channels != 0 ? output_channels : this->audio_stream_info_.get_channels(),
-      this->target_sample_rate_);
+  this->target_stream_info_ = audio::AudioStreamInfo(target_bits_per_sample, this->audio_stream_info_.get_channels(),
+                                                     this->target_sample_rate_);
 
   this->output_speaker_->set_audio_stream_info(this->target_stream_info_);
   this->output_speaker_->start();
-  this->started_info_ = this->audio_stream_info_;
 
-  this->resampling_ = this->requires_resampling_();
-  if (this->resampling_) {
+  if (this->requires_resampling_()) {
     // Start the resampler task to handle converting sample rates
     if (!this->task_.create(resample_task, "resampler", TASK_STACK_SIZE, (void *) this, RESAMPLER_TASK_PRIORITY,
                             this->task_stack_in_psram_, LOOP_TASK_CORE)) {
@@ -526,15 +286,12 @@ esp_err_t ResamplerSpeaker::start_() {
 void ResamplerSpeaker::stop() { this->send_command_(ResamplingEventGroupBits::COMMAND_STOP); }
 
 void ResamplerSpeaker::enter_stopping_state_() {
-  this->finishing_.store(false);
-  this->resampling_ = false;
   this->state_ = speaker::STATE_STOPPING;
   this->state_start_ms_ = App.get_loop_component_start_time();
   if (this->task_.is_created()) {
     xEventGroupSetBits(this->event_group_, ResamplingEventGroupBits::TASK_COMMAND_STOP);
   }
-  if (this->output_speaker_ != nullptr)
-    this->output_speaker_->stop();
+  this->output_speaker_->stop();
 }
 
 void ResamplerSpeaker::finish() { this->send_command_(ResamplingEventGroupBits::COMMAND_FINISH); }
@@ -547,29 +304,21 @@ bool ResamplerSpeaker::has_buffered_data() const {
       has_ring_buffer_data = (temp_ring_buffer->available() > 0);
     }
   }
-  return has_ring_buffer_data || (this->output_speaker_ != nullptr && this->output_speaker_->has_buffered_data());
+  return (has_ring_buffer_data || this->output_speaker_->has_buffered_data());
 }
 
 void ResamplerSpeaker::set_mute_state(bool mute_state) {
   this->mute_state_ = mute_state;
-  this->mute_set_ = true;
-  if (this->output_speaker_ != nullptr)
-    this->output_speaker_->set_mute_state(mute_state);
+  this->output_speaker_->set_mute_state(mute_state);
 }
 
 void ResamplerSpeaker::set_volume(float volume) {
   this->volume_ = volume;
-  this->volume_set_ = true;
-  if (this->output_speaker_ != nullptr)
-    this->output_speaker_->set_volume(volume);
+  this->output_speaker_->set_volume(volume);
 }
 
 bool ResamplerSpeaker::requires_resampling_() const {
   if (this->audio_stream_info_.get_sample_rate() != this->target_sample_rate_) {
-    return true;
-  }
-  const uint8_t output_channels = this->output_channels_;
-  if (output_channels != 0 && output_channels != this->audio_stream_info_.get_channels()) {
     return true;
   }
   // In passthrough mode the bits per sample always matches the input, so it never forces resampling.
@@ -622,8 +371,7 @@ void ResamplerSpeaker::resample_task(void *params) {
 
       // Stop gracefully if the decoder is done
       int32_t ms_differential = 0;
-      audio::AudioResamplerState resampler_state =
-          resampler->resample((event_bits & ResamplingEventGroupBits::TASK_COMMAND_FINISH) != 0, &ms_differential);
+      audio::AudioResamplerState resampler_state = resampler->resample(false, &ms_differential);
 
       if (resampler_state == audio::AudioResamplerState::FINISHED) {
         break;
