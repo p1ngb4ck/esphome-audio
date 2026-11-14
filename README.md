@@ -96,3 +96,26 @@ core of the build host stays as installed.
 
 Echo cancellation is Espressif's esp-sr AEC. Everyone this project builds on:
 [ATTRIBUTIONS.md](https://github.com/p1ngb4ck/esphome/blob/dev/ATTRIBUTIONS.md).
+
+## Branch structure
+
+Each `pr/` branch holds one part of this topic on top of upstream and says in its `BRANCH.md` what it is based on. `main` holds all of them.
+
+| Branch | Based on |
+|---|---|
+| `pr/audio-aac-eight-channels` | upstream only |
+| `pr/audio-dac-stopping` | `pr/i2s-audio-enable-pin` |
+| `pr/audio-decoder-discard-output` | upstream only |
+| `pr/audio-decoder-heap` | `pr/audio-aac-eight-channels` |
+| `pr/audio-reader-http-tx-buffer` | upstream only |
+| `pr/audio-task-priority` | `pr/speaker-media-player-end` |
+| `pr/audio-tasks-loop-core` | `pr/esp32-loop-task-core` of p1ngb4ck/esphome-esp32-platform |
+| `pr/es8311-dac-reference` | upstream only |
+| `pr/es8311-volume-range` | upstream only |
+| `pr/i2s-audio-enable-pin` | upstream only |
+| `pr/i2s-audio-nvs` | `pr/i2s-audio-enable-pin` |
+| `pr/mixer-source-lock` | upstream only |
+| `pr/resampler-aec` | `pr/resampler-routing` |
+| `pr/resampler-mic-callbacks-capture-time` | `pr/resampler-aec` |
+| `pr/resampler-routing` | `pr/audio-task-priority` |
+| `pr/speaker-media-player-end` | upstream only |
