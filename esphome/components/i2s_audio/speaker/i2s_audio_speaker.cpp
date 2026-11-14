@@ -141,6 +141,10 @@ void I2SAudioSpeakerBase::loop() {
     ESP_LOGV(TAG, "Stopping");
     xEventGroupClearBits(this->event_group_, SpeakerEventGroupBits::TASK_STOPPING);
     this->set_amplifier_(false);
+#ifdef USE_AUDIO_DAC_STOPPING
+    for (auto *audio_dac : this->audio_dacs_)
+      audio_dac->on_audio_stopping();
+#endif
     this->state_ = speaker::STATE_STOPPING;
   }
   if (event_group_bits & SpeakerEventGroupBits::TASK_STOPPED) {
@@ -208,8 +212,8 @@ void I2SAudioSpeakerBase::loop() {
       // from wherever the previous run left off. Posted here, not in the task: the ramp's mailbox
       // allows one writer, and that is the main loop.
       this->post_software_gain_(0);
-      xTaskCreate(I2SAudioSpeakerBase::speaker_task, "speaker_task", TASK_STACK_SIZE, (void *) this, TASK_PRIORITY,
-                  &this->speaker_task_handle_);
+      xTaskCreatePinnedToCore(I2SAudioSpeakerBase::speaker_task, "speaker_task", TASK_STACK_SIZE, (void *) this,
+                              TASK_PRIORITY, &this->speaker_task_handle_, LOOP_TASK_CORE);
 
       if (this->speaker_task_handle_ == nullptr) {
         ESP_LOGE(TAG, "Task failed to start, retrying in 1 second");
