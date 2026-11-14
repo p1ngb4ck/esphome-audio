@@ -39,21 +39,18 @@ class ResamplerMicrophone final : public Component, public microphone::Microphon
   explicit ResamplerMicrophone(microphone::MicrophoneSource *source) { this->add_source(source); }
   /// Codegen: a further source (index 1, 2, ...).
   void add_source(microphone::MicrophoneSource *source) {
-    this->sources_.push_back({source, nullptr, "", 0, this->take_order_()});
+    this->sources_.push_back({source, nullptr, "", 0, this->next_order_++});
   }
   void set_source_name(size_t index, const char *name) {
     this->sources_[index].name = name;
     this->sources_[index].key = fnv1_hash(name);
   }
   size_t add_source_group(uint8_t bits_per_sample, int32_t gain_factor, uint8_t channels) {
-    this->groups_.push_back({bits_per_sample, gain_factor, channels, this->take_order_()});
+    this->groups_.push_back({bits_per_sample, gain_factor, channels, this->next_order_++});
     return this->groups_.size() - 1;
   }
   void add_group_source(size_t group, microphone::Microphone *mic, const char *name, uint32_t key);
-  void add_runtime_source(microphone::Microphone *mic, const char *name, uint32_t key, uint8_t bits_per_sample,
-                          int32_t gain_factor, uint8_t channels, int16_t position);
   void remove_source(microphone::Microphone *mic);
-  void forget_source(microphone::Microphone *mic);
   void set_preference_key(uint32_t key) { this->preference_key_ = key; }
 #ifdef USE_RESAMPLER_MICROPHONE_AEC
   void set_source_echo_cancellation(size_t index, uint8_t mode, uint8_t reference_channel, uint8_t filter_length) {
@@ -120,13 +117,6 @@ class ResamplerMicrophone final : public Component, public microphone::Microphon
   void hook_(microphone::MicrophoneSource *source);
   void switch_source_(microphone::MicrophoneSource *source);
   size_t index_of_(const microphone::MicrophoneSource *source) const;
-  void add_made_source_(microphone::Microphone *mic, const char *name, uint32_t key, uint8_t bits_per_sample,
-                        int32_t gain_factor, uint8_t channels, uint8_t order);
-  uint8_t take_order_() {
-    const uint8_t order = this->next_order_;
-    this->next_order_ += 2;
-    return order;
-  }
 
   struct Source {
     microphone::MicrophoneSource *source;
@@ -155,7 +145,7 @@ class ResamplerMicrophone final : public Component, public microphone::Microphon
   uint32_t preference_key_{0};
   uint32_t wanted_key_{0};
   bool wanted_none_{false};
-  uint8_t next_order_{1};
+  uint8_t next_order_{0};
   // A switch can let the old source's task and the new one's overlap for one chunk: the second is dropped
   std::atomic<bool> processing_{false};
   std::atomic<bool> emitting_{false};

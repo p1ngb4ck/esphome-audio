@@ -86,22 +86,9 @@ void ResamplerMicrophone::add_group_source(size_t group, microphone::Microphone 
   if (group >= this->groups_.size())
     return;
   const Group &g = this->groups_[group];
-  this->add_made_source_(mic, name, key, g.bits_per_sample, g.gain_factor, g.channels, g.order);
-}
-
-void ResamplerMicrophone::add_runtime_source(microphone::Microphone *mic, const char *name, uint32_t key,
-                                             uint8_t bits_per_sample, int32_t gain_factor, uint8_t channels,
-                                             int16_t position) {
-  this->add_made_source_(mic, name, key, bits_per_sample, gain_factor, channels,
-                         position < 0 ? this->next_order_ : static_cast<uint8_t>(position * 2));
-}
-
-void ResamplerMicrophone::add_made_source_(microphone::Microphone *mic, const char *name, uint32_t key,
-                                           uint8_t bits_per_sample, int32_t gain_factor, uint8_t channels,
-                                           uint8_t order) {
   microphone::MicrophoneSource *source = nullptr;
   for (const Source &made : this->made_) {
-    if (made.mic == mic && made.order == order)
+    if (made.mic == mic && made.order == g.order)
       source = made.source;
   }
   if (source == nullptr) {
@@ -111,20 +98,20 @@ void ResamplerMicrophone::add_made_source_(microphone::Microphone *mic, const ch
       ESP_LOGE(TAG, "No PSRAM for source %s", name);
       return;
     }
-    source = new (mem) microphone::MicrophoneSource(mic, bits_per_sample, gain_factor, false);
+    source = new (mem) microphone::MicrophoneSource(mic, g.bits_per_sample, g.gain_factor, false);
     for (uint8_t channel = 0; channel < 8; channel++) {
-      if (channels & (1u << channel))
+      if (g.channels & (1u << channel))
         source->add_channel(channel);
     }
     this->hook_(source);
-    this->made_.push_back({source, mic, name, key, order});
+    this->made_.push_back({source, mic, name, key, g.order});
   }
   if (this->index_of_(source) != this->sources_.size())
     return;
   size_t position = 0;
-  while (position < this->sources_.size() && this->sources_[position].order <= order)
+  while (position < this->sources_.size() && this->sources_[position].order <= g.order)
     position++;
-  this->sources_.insert(this->sources_.begin() + position, {source, mic, name, key, order});
+  this->sources_.insert(this->sources_.begin() + position, {source, mic, name, key, g.order});
   ESP_LOGI(TAG, "Source added: %s", name);
   if (!this->wanted_none_ &&
       (key == this->wanted_key_ || (this->active_.load() == nullptr && this->sources_.size() == 1)))
@@ -144,21 +131,6 @@ void ResamplerMicrophone::remove_source(microphone::Microphone *mic) {
   if (this->active_.load() == source)
     this->switch_source_(this->sources_.empty() ? nullptr : this->sources_[0].source);
   this->sources_changed_callback_.call();
-}
-
-void ResamplerMicrophone::forget_source(microphone::Microphone *mic) {
-  this->remove_source(mic);
-  RAMAllocator<microphone::MicrophoneSource> allocator(RAMAllocator<microphone::MicrophoneSource>::ALLOC_EXTERNAL);
-  for (size_t i = 0; i < this->made_.size();) {
-    if (this->made_[i].mic != mic) {
-      i++;
-      continue;
-    }
-    microphone::MicrophoneSource *source = this->made_[i].source;
-    source->~MicrophoneSource();
-    allocator.deallocate(source, 1);
-    this->made_.erase(this->made_.begin() + i);
-  }
 }
 
 void ResamplerMicrophone::dump_config() {
