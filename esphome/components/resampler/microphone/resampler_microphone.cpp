@@ -63,9 +63,7 @@ void ResamplerMicrophone::setup() {
 }
 
 void ResamplerMicrophone::hook_(microphone::MicrophoneSource *source) {
-  source->add_data_callback([this, source](const microphone::AudioCapture &capture) {
     if (this->active_.load() == source)
-      this->process_audio_(source, capture.data, capture.capture_time_us);
   });
 }
 
@@ -86,22 +84,9 @@ void ResamplerMicrophone::add_group_source(size_t group, microphone::Microphone 
   if (group >= this->groups_.size())
     return;
   const Group &g = this->groups_[group];
-  this->add_made_source_(mic, name, key, g.bits_per_sample, g.gain_factor, g.channels, g.order);
-}
-
-void ResamplerMicrophone::add_runtime_source(microphone::Microphone *mic, const char *name, uint32_t key,
-                                             uint8_t bits_per_sample, int32_t gain_factor, uint8_t channels,
-                                             int16_t position) {
-  this->add_made_source_(mic, name, key, bits_per_sample, gain_factor, channels,
-                         position < 0 ? this->next_order_ : static_cast<uint8_t>(position * 2));
-}
-
-void ResamplerMicrophone::add_made_source_(microphone::Microphone *mic, const char *name, uint32_t key,
-                                           uint8_t bits_per_sample, int32_t gain_factor, uint8_t channels,
-                                           uint8_t order) {
   microphone::MicrophoneSource *source = nullptr;
   for (const Source &made : this->made_) {
-    if (made.mic == mic && made.order == order)
+    if (made.mic == mic && made.order == g.order)
       source = made.source;
   }
   if (source == nullptr) {
@@ -111,20 +96,20 @@ void ResamplerMicrophone::add_made_source_(microphone::Microphone *mic, const ch
       ESP_LOGE(TAG, "No PSRAM for source %s", name);
       return;
     }
-    source = new (mem) microphone::MicrophoneSource(mic, bits_per_sample, gain_factor, false);
+    source = new (mem) microphone::MicrophoneSource(mic, g.bits_per_sample, g.gain_factor, false);
     for (uint8_t channel = 0; channel < 8; channel++) {
-      if (channels & (1u << channel))
+      if (g.channels & (1u << channel))
         source->add_channel(channel);
     }
     this->hook_(source);
-    this->made_.push_back({source, mic, name, key, order});
+    this->made_.push_back({source, mic, name, key, g.order});
   }
   if (this->index_of_(source) != this->sources_.size())
     return;
   size_t position = 0;
-  while (position < this->sources_.size() && this->sources_[position].order <= order)
+  while (position < this->sources_.size() && this->sources_[position].order <= g.order)
     position++;
-  this->sources_.insert(this->sources_.begin() + position, {source, mic, name, key, order});
+  this->sources_.insert(this->sources_.begin() + position, {source, mic, name, key, g.order});
   ESP_LOGI(TAG, "Source added: %s", name);
   if (!this->wanted_none_ &&
       (key == this->wanted_key_ || (this->active_.load() == nullptr && this->sources_.size() == 1)))
@@ -144,21 +129,6 @@ void ResamplerMicrophone::remove_source(microphone::Microphone *mic) {
   if (this->active_.load() == source)
     this->switch_source_(this->sources_.empty() ? nullptr : this->sources_[0].source);
   this->sources_changed_callback_.call();
-}
-
-void ResamplerMicrophone::forget_source(microphone::Microphone *mic) {
-  this->remove_source(mic);
-  RAMAllocator<microphone::MicrophoneSource> allocator(RAMAllocator<microphone::MicrophoneSource>::ALLOC_EXTERNAL);
-  for (size_t i = 0; i < this->made_.size();) {
-    if (this->made_[i].mic != mic) {
-      i++;
-      continue;
-    }
-    microphone::MicrophoneSource *source = this->made_[i].source;
-    source->~MicrophoneSource();
-    allocator.deallocate(source, 1);
-    this->made_.erase(this->made_.begin() + i);
-  }
 }
 
 void ResamplerMicrophone::dump_config() {
@@ -318,41 +288,23 @@ bool ResamplerMicrophone::init_resampler_(const audio::AudioStreamInfo &input_st
   return true;
 }
 
-void ResamplerMicrophone::process_audio_(microphone::MicrophoneSource *source, std::span<const uint8_t> data,
-                                         int64_t capture_time_us) {
   if (this->processing_.exchange(true))
     return;
-  this->process_chunk_(source, data, capture_time_us);
   this->processing_.store(false);
 }
 
-void ResamplerMicrophone::process_chunk_(microphone::MicrophoneSource *source, std::span<const uint8_t> data,
-                                         int64_t capture_time_us) {
   const audio::AudioStreamInfo input_stream_info = source->get_audio_stream_info();
 #ifdef USE_RESAMPLER_MICROPHONE_AEC
   if (source == this->aec_source_.load()) {
-    this->aec_input_(input_stream_info, data, capture_time_us);
     return;
   }
 #endif
   if (this->emitting_.exchange(true))
     return;
-  this->emit_(input_stream_info, data.data(), data.size(), true, capture_time_us);
   this->emitting_.store(false);
 }
 
-void ResamplerMicrophone::publish_source_(const uint8_t *data, size_t len, int64_t capture_time_us) {
-  if (this->mute_state_) {
-    this->output_buffer_.assign(len, 0);
-    this->publish_audio_(this->output_buffer_, this->audio_stream_info_, capture_time_us);
-    return;
-  }
-  this->data_callbacks_.call(
-      microphone::AudioCapture{std::span<const uint8_t>(data, len), this->audio_stream_info_, capture_time_us});
-}
-
 void ResamplerMicrophone::emit_(const audio::AudioStreamInfo &input_stream_info, const uint8_t *data, size_t len,
-                                bool from_source, int64_t capture_time_us) {
   bool reinit = false;
   if (this->format_pending_.exchange(false)) {
     this->target_sample_rate_ = this->pending_sample_rate_;
@@ -375,14 +327,27 @@ void ResamplerMicrophone::emit_(const audio::AudioStreamInfo &input_stream_info,
   const size_t sample_bytes = input_stream_info.samples_to_bytes(1);
 
   if (this->resampler_ == nullptr) {
-    if (in_channels == out_channels && from_source) {
-      this->publish_source_(data, len, capture_time_us);
+    if (this->mute_state_) {
+      // The source's buffer is shared with its other consumers, so publish zeros from our own buffer, in pieces that
+      // fit its reserved size so muting never allocates
+      const uint32_t max_frames = input_stream_info.ms_to_frames(BUFFER_DURATION_MS);
+      const uint32_t total_frames = input_stream_info.bytes_to_frames(capture.data.size());
+      for (uint32_t done = 0; done < total_frames;) {
+        const uint32_t frames = std::min(total_frames - done, max_frames);
+        this->output_buffer_.assign(input_stream_info.frames_to_bytes(frames), 0);
+        const int64_t time_us =
+            capture.capture_time_us == 0 ? 0 : capture.capture_time_us + input_stream_info.frames_to_microseconds(done);
+        this->publish_audio_(this->output_buffer_, input_stream_info, time_us);
+        done += frames;
+      }
+    } else {
+      // Needs a protected forwarding method once data_callbacks_ is made private in 2027.5.0
+      this->data_callbacks_.call(microphone::AudioCapture{capture.data, input_stream_info, capture.capture_time_us});
       return;
     }
     const uint32_t frames = input_stream_info.bytes_to_frames(len);
     this->output_buffer_.resize(output_stream_info.frames_to_bytes(frames));
     audio::convert_channels(data, this->output_buffer_.data(), frames, in_channels, out_channels, sample_bytes);
-    this->publish_audio_(this->output_buffer_, this->audio_stream_info_, capture_time_us);
     return;
   }
 
@@ -410,9 +375,13 @@ void ResamplerMicrophone::emit_(const audio::AudioStreamInfo &input_stream_info,
 
     if (results.frames_generated > 0) {
       int64_t output_time_us = 0;
-      if (capture_time_us != 0) {
+      if (capture.capture_time_us != 0) {
+        // The resampler holds back half its taps of input, so its next output is near the input frame that far behind
+        // the last one taken in; its position gives the exact offset. The block's first output is one block duration
+        // before that. After a gap in the source, the few frames held back from before it are timed as if there were
+        // no gap.
         const uint32_t input_rate = input_stream_info.get_sample_rate();
-        output_time_us = capture_time_us + (frames_consumed - this->taps_ / 2) * 1000000 / input_rate +
+        output_time_us = capture.capture_time_us + (frames_consumed - this->taps_ / 2) * 1000000 / input_rate +
                          static_cast<int64_t>(this->resampler_->get_position() * 1000000.0f / input_rate) -
                          static_cast<int64_t>(results.frames_generated) * 1000000 / this->target_sample_rate_;
       }
@@ -505,13 +474,10 @@ bool ResamplerMicrophone::aec_update_() {
   return true;
 }
 
-void ResamplerMicrophone::aec_input_(const audio::AudioStreamInfo &input_stream_info, std::span<const uint8_t> data,
-                                     int64_t capture_time_us) {
   if (input_stream_info.get_sample_rate() != 16000 || input_stream_info.get_bits_per_sample() != 16 ||
       input_stream_info.get_channels() != 2) {
     if (this->emitting_.exchange(true))
       return;
-    this->emit_(input_stream_info, data.data(), data.size(), true, capture_time_us);
     this->emitting_.store(false);
     return;
   }
@@ -537,7 +503,6 @@ void ResamplerMicrophone::aec_run_() {
       if (this->emitting_.exchange(true))
         continue;
       this->emit_(mono_stream_info, reinterpret_cast<const uint8_t *>(this->aec_out_),
-                  this->aec_frame_ * sizeof(int16_t), false, 0);
       this->emitting_.store(false);
     }
   }
