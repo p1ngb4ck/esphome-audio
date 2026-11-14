@@ -49,8 +49,6 @@ class SourceSpeaker final : public speaker::Speaker, public Component {
   void dump_config() override;
   void setup() override;
   void loop() override;
-  void on_shutdown() override { this->stop_for_teardown_(); }
-  bool teardown() override { return this->teardown_with_loop_(this); }
 
   size_t play(const uint8_t *data, size_t length, TickType_t ticks_to_wait) override;
   size_t play(const uint8_t *data, size_t length) override { return this->play(data, length, 0); }
@@ -90,10 +88,7 @@ class SourceSpeaker final : public speaker::Speaker, public Component {
   void set_parent(MixerSpeaker *parent) { this->parent_ = parent; }
   void set_timeout(uint32_t ms) { this->timeout_ms_ = ms; }
 
-  std::weak_ptr<audio::RingBufferAudioSource> get_audio_source() {
-    LockGuard guard(this->ring_buffer_lock_);
-    return this->audio_source_;
-  }
+  std::weak_ptr<audio::RingBufferAudioSource> get_audio_source() { return this->audio_source_; }
 
  protected:
   friend class MixerSpeaker;
@@ -105,9 +100,6 @@ class SourceSpeaker final : public speaker::Speaker, public Component {
 
   std::shared_ptr<audio::RingBufferAudioSource> audio_source_;
   std::weak_ptr<ring_buffer::RingBuffer> ring_buffer_;
-  // ring_buffer_ and audio_source_ are replaced on the main loop (start_(), enter_stopping_state_())
-  // while play() (the writer's task), the mixer task and has_buffered_data() read them.
-  mutable Mutex ring_buffer_lock_;
 
   uint32_t buffer_duration_ms_;
   uint32_t last_seen_data_ms_{0};
@@ -131,11 +123,6 @@ class MixerSpeaker final : public Component {
   void dump_config() override;
   void setup() override;
   void loop() override;
-  bool teardown() override {
-    if (this->task_.is_created())
-      this->loop();
-    return !this->task_.is_created();
-  }
 
   void set_source_speaker_storage(std::span<SourceSpeaker *> storage) { this->source_speakers_.init(storage); }
   void add_source_speaker(SourceSpeaker *source_speaker) { this->source_speakers_.push_back(source_speaker); }
