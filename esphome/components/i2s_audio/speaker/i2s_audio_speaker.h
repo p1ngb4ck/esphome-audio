@@ -51,8 +51,6 @@ class I2SAudioSpeakerBase : public I2SAudioOut, public speaker::Speaker, public 
   void setup() override;
   void dump_config() override;
   void loop() override;
-  void on_shutdown() override { this->stop_for_teardown_(); }
-  bool teardown() override { return this->teardown_with_loop_(this); }
 
   void set_buffer_duration(uint32_t buffer_duration_ms) { this->buffer_duration_ms_ = buffer_duration_ms; }
   void set_timeout(uint32_t ms) { this->timeout_ = ms; }
