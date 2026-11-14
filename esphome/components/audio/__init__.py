@@ -255,7 +255,7 @@ def final_validate_audio_schema(
         audio_device_issue (bool, optional): Format the error message to indicate the problem is in the configuration for the ``audio_device`` component. Defaults to False.
     """
 
-    def validate_audio_compatiblity(audio_config: ConfigType) -> ConfigType:
+    def validate_audio_compatibility(audio_config: ConfigType) -> ConfigType:
         audio_schema = {}
 
         if bits_per_sample is not cv.UNDEFINED:
@@ -317,7 +317,7 @@ def final_validate_audio_schema(
     return cv.Schema(
         {
             cv.Required(audio_device): fv.id_declaration_match_schema(
-                validate_audio_compatiblity
+                validate_audio_compatibility
             )
         },
         extra=cv.ALLOW_EXTRA,
