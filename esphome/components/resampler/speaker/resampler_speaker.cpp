@@ -15,6 +15,14 @@
 
 namespace esphome::resampler {
 
+#ifndef LOOP_TASK_CORE
+#if CONFIG_FREERTOS_UNICORE
+static constexpr BaseType_t LOOP_TASK_CORE = tskNO_AFFINITY;
+#else
+static constexpr BaseType_t LOOP_TASK_CORE = 1;
+#endif
+#endif
+
 // Above the main loop: paced by its input and output, it takes no more than the sound needs.
 static const UBaseType_t RESAMPLER_TASK_PRIORITY = 2;
 

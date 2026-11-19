@@ -10,6 +10,14 @@
 
 namespace esphome::speaker {
 
+#ifndef LOOP_TASK_CORE
+#if CONFIG_FREERTOS_UNICORE
+static constexpr BaseType_t LOOP_TASK_CORE = tskNO_AFFINITY;
+#else
+static constexpr BaseType_t LOOP_TASK_CORE = 1;
+#endif
+#endif
+
 static const uint32_t INITIAL_BUFFER_MS = 1000;  // Start playback after buffering this duration of the file
 
 static const uint32_t READ_TASK_STACK_SIZE = 5 * 1024;

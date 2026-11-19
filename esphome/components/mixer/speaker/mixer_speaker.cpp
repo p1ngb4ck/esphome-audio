@@ -15,6 +15,14 @@
 
 namespace esphome::mixer_speaker {
 
+#ifndef LOOP_TASK_CORE
+#if CONFIG_FREERTOS_UNICORE
+static constexpr BaseType_t LOOP_TASK_CORE = tskNO_AFFINITY;
+#else
+static constexpr BaseType_t LOOP_TASK_CORE = 1;
+#endif
+#endif
+
 static const UBaseType_t MIXER_TASK_PRIORITY = 10;
 
 static const uint32_t STOPPING_TIMEOUT_MS = 5000;

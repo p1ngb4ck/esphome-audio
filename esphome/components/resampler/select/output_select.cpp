@@ -22,8 +22,10 @@ void OutputSelect::publish_options_() {
   this->traits.set_options(options);
   if (this->parent_->output_count() != 0) {
     this->publish_state(this->parent_->active_output());
+#if defined(USE_SELECT) && defined(USE_CONTROLLER_REGISTRY)
   } else {
     this->publish_options();
+#endif
   }
 }
 

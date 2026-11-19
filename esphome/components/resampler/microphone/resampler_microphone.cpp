@@ -17,6 +17,14 @@
 
 namespace esphome::resampler {
 
+#ifndef LOOP_TASK_CORE
+#if CONFIG_FREERTOS_UNICORE
+static constexpr BaseType_t LOOP_TASK_CORE = tskNO_AFFINITY;
+#else
+static constexpr BaseType_t LOOP_TASK_CORE = 1;
+#endif
+#endif
+
 ESPHOME_LOG_TAG(TAG, "resampler.microphone");
 
 // Duration of audio the resampler converts per step; longer source chunks are processed in several steps
