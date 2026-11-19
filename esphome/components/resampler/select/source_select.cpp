@@ -26,10 +26,10 @@ void SourceSelect::publish_options_() {
 void SourceSelect::publish_source_(int index) {
   if (index >= 0) {
     this->publish_state(static_cast<size_t>(index));
-#if defined(USE_SELECT) && defined(USE_CONTROLLER_REGISTRY)
   } else {
-    this->publish_options();
-#endif
+    if constexpr (requires { this->publish_options(); }) {
+      this->publish_options();
+    }
   }
 }
 
