@@ -8,6 +8,16 @@ namespace esphome::resampler {
 
 static const char *const TAG = "resampler.source_select";
 
+template<typename T>
+concept HasPublishOptions = requires(T *t) { t->publish_options(); };
+
+template<typename T>
+static void maybe_publish_options(T *select) {
+  if constexpr (HasPublishOptions<T>) {
+    select->publish_options();
+  }
+}
+
 void SourceSelect::setup() {
   this->parent_->add_on_source_callback([this](int index) { this->publish_source_(index); });
   this->parent_->add_on_sources_changed_callback([this]() { this->publish_options_(); });
@@ -27,9 +37,7 @@ void SourceSelect::publish_source_(int index) {
   if (index >= 0) {
     this->publish_state(static_cast<size_t>(index));
   } else {
-    if constexpr (requires { this->publish_options(); }) {
-      this->publish_options();
-    }
+    maybe_publish_options(this);
   }
 }
 

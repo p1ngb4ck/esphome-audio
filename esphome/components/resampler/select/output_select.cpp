@@ -8,6 +8,16 @@ namespace esphome::resampler {
 
 static const char *const TAG = "resampler.select";
 
+template<typename T>
+concept HasPublishOptions = requires(T *t) { t->publish_options(); };
+
+template<typename T>
+static void maybe_publish_options(T *select) {
+  if constexpr (HasPublishOptions<T>) {
+    select->publish_options();
+  }
+}
+
 void OutputSelect::setup() {
   this->parent_->add_on_output_callback([this](size_t index) { this->publish_state(index); });
   this->parent_->add_on_outputs_changed_callback([this]() { this->publish_options_(); });
@@ -23,9 +33,7 @@ void OutputSelect::publish_options_() {
   if (this->parent_->output_count() != 0) {
     this->publish_state(this->parent_->active_output());
   } else {
-    if constexpr (requires { this->publish_options(); }) {
-      this->publish_options();
-    }
+    maybe_publish_options(this);
   }
 }
 
