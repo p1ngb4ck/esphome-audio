@@ -13,12 +13,14 @@ ESPHOME_LOG_TAG(TAG, "es8311");
 // Mark the component as failed; use only in setup
 #define ES8311_ERROR_FAILED(func) \
   if (!(func)) { \
+    ESP_LOGE(TAG, "ES8311 setup failed at line %d (" #func ")", __LINE__); \
     this->mark_failed(LOG_STR("Failed to initialize")); \
     return; \
   }
 // Return false; use outside of setup
 #define ES8311_ERROR_CHECK(func) \
   if (!(func)) { \
+    ESP_LOGE(TAG, "ES8311 check failed at line %d (" #func ")", __LINE__); \
     return false; \
   }
 
