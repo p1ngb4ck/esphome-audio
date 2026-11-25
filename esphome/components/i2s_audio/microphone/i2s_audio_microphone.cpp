@@ -345,12 +345,13 @@ void I2SAudioMicrophone::mic_task(void *params) {
     // Read whole DMA buffers. When its queue is nearly full, the driver discards the unread rest of a buffer it is
     // partway through without reporting it, which would throw off the capture time count.
     const size_t dma_buffer_bytes = this_microphone->dma_buffer_bytes_;
-    const size_t bytes_to_read =
-        std::max<size_t>(1, (stream_info.ms_to_bytes(READ_DURATION_MS) + dma_buffer_bytes / 2) / dma_buffer_bytes) *
-        dma_buffer_bytes;
-    const uint32_t read_duration_ms =
-        (stream_info.bytes_to_frames(bytes_to_read) * 1000 + stream_info.get_sample_rate() - 1) /
-        stream_info.get_sample_rate();
+    const size_t default_bytes = stream_info.ms_to_bytes(READ_DURATION_MS);
+    const size_t bytes_to_read = (dma_buffer_bytes > 0)
+        ? std::max<size_t>(1, (default_bytes + dma_buffer_bytes / 2) / dma_buffer_bytes) * dma_buffer_bytes
+        : default_bytes;
+    const uint32_t read_duration_ms = std::max<uint32_t>(
+        1, (stream_info.bytes_to_frames(bytes_to_read) * 1000 + stream_info.get_sample_rate() - 1) /
+               stream_info.get_sample_rate());
     std::vector<uint8_t> samples;
     samples.reserve(bytes_to_read);
 
@@ -363,6 +364,7 @@ void I2SAudioMicrophone::mic_task(void *params) {
         samples.resize(bytes_to_read);
         size_t bytes_read = this_microphone->read_(samples.data(), bytes_to_read, 2 * read_duration_ms);
         if (bytes_read == 0) {
+          vTaskDelay(pdMS_TO_TICKS(read_duration_ms));
           continue;
         }
 
@@ -415,6 +417,9 @@ bool IRAM_ATTR I2SAudioMicrophone::i2s_on_recv_q_ovf_cb(i2s_chan_handle_t handle
 }
 
 size_t I2SAudioMicrophone::read_(uint8_t *buf, size_t len, uint32_t timeout_ms) {
+  if (this->rx_handle_ == nullptr) {
+    return 0;
+  }
   size_t bytes_read = 0;
   esp_err_t err = i2s_channel_read(this->rx_handle_, buf, len, &bytes_read, timeout_ms);
   if ((err != ESP_OK) && ((err != ESP_ERR_TIMEOUT) || (timeout_ms != 0))) {
